@@ -1,59 +1,83 @@
 function [PNL] = run_strategy(skew, vix, skew_star, vix_star, option_data, rate_data, tcost)
+% LOAD PROCESSED_DATA.MAT BEFORE RUNNING THIS!!!!
+
+
 %input filtered by expir option and rate data
 %skew and vix: time series
 %skew, vix, skew_star, vix_star, option_data, rate_data, tcost
 dates = unique(rate_data.DATETIME);
-long_trade_dates = dates((skew.SKEW > skew_star) & (vix.Close < vix_star));
+long_trade_dates = dates((skew.SKEW > -0.076) & (vix.Close < 15.35));
+%long_trade_dates = dates;
 long_trades = option_data(ismember(option_data.DATETIME, long_trade_dates), :); %apply conditions to dates to find where to make trades
 long_trade_rates = rate_data(ismember(rate_data.DATETIME, long_trade_dates), :);
 
-%short_trade_dates = dates((skew.SKEW  < skew_star) & (vix.Close > vix_star));
-%short_trades = option_data(ismember(option_data.DATETIME, short_trade_dates), :);
-%short_trade_rates = rate_data(ismember(option_data.DATETIME, short_trade_dates), :);
+short_trade_dates = dates((skew.SKEW  < -0.084) & (vix.Close > 18.65));
+short_trades = option_data(ismember(option_data.DATETIME, short_trade_dates), :);
+short_trade_rates = rate_data(ismember(rate_data.DATETIME, short_trade_dates), :);
 
-pnl_long = trade_long(long_trades, long_trade_rates, rate_data, tcost);
-pnl_short = 0
-%pnl_short = trade_short(short_trades, short_trade_rates, rate_data, tcost);
+[~, pnl_long] = trade_long(long_trades, long_trade_rates, rate_data, tcost);
+pnl_short = trade_short(short_trades, short_trade_rates, rate_data, tcost); 
 
 PNL = pnl_long + pnl_short;
+
+%%%% Delete dates that we don't trade %%%
+% dates(dates >= '2018-12-03') = [];
+% difference = length(pnl_long_array) - length(dates);
+% pnl_long_array = pnl_long_array(1:end-difference, :);
+% plot(dates, pnl_long_array);
 end
 
-function [tot_returns] = trade_long(opt, rates, all_rates, tcost)
+function [returns_array, tot_returns] = trade_long(opt, rates, all_rates, tcost)
 
 %opt = opt(opt.DATETIME == dates, :); %filter option data to only trading dates
 %rate_filtered = rates(rates.DATETIME == dates, :);
-
+%dates = unique(all_rates.DATETIME);
+returns_array = zeros(248,1);
+% sigma_array = zeros(248,1);
+% kvar_array = zeros(248,1);
 returns = 0;
 for i = 1:height(rates) %loop through each unique data to find sigma and K
     
    trade_date = rates.DATETIME(i); %get current trade date
+   if (trade_date + calmonths(1) > '2018-12-31')
+       %disp(trade_date);
+       break;
+   end
    trade_rate = rates(i, :);
    opt_i = opt(opt.DATETIME == trade_date, :);
+   
    k_i = K_Var(opt_i, trade_rate);
-   disp(k_i);
    sigmar_i = realized_vol(all_rates, trade_date);
    
-   returns_i = sigmar_i - k_i^2 - tcost;
+   returns_i = sigmar_i - k_i - tcost;
+   returns_array(i) = returns_i;
+%    sigma_array(i) = sigmar_i;
+%    kvar_array(i) = k_i;
    returns = returns + returns_i;
 end
 
 tot_returns = returns;
+%plot(dates, kvar_array);
 end
 
-function [tot_returns] = trade_short(opt, rates, tcost)
+function [tot_returns] = trade_short(opt, rates, all_rates, tcost)
 
 %opt = opt(opt.DATETIME == dates);
 %rate_filtered = rates(rates.DATETIME == dates, :);
-
 returns = 0;
-for i = 1:height(rate_filtered)
+for i = 1:height(rates) %loop through each unique data to find sigma and K
     
-   trade_date = rate_filtered.DATETIME(i);
+   trade_date = rates.DATETIME(i); %get current trade date
+   if (trade_date + calmonths(1) > '2018-12-31')
+       %disp(trade_date);
+       break;
+   end
+   trade_rate = rates(i, :);
    opt_i = opt(opt.DATETIME == trade_date, :);
-   k_i = K_Var(opt_i, rates);
-   sigmar_i = realized_vol(rates, trade_date);
-   
-   returns_i = -sigmar_i + k_i^2 - tcost;
+   k_i = K_Var(opt_i, trade_rate);
+   sigmar_i = realized_vol(all_rates, trade_date);
+
+   returns_i = -sigmar_i + k_i - tcost;
    returns = returns + returns_i;
 end
 
@@ -66,15 +90,16 @@ function [sigma_r] = realized_vol(rates, trade_date)
 one_month = trade_date + calmonths(1);
 %[minm, min_idx] = min(abs(rates.DATETIME - one_month))
 
-spot = rates.SPOT((rates.DATETIME >= trade_date) & (rates.DATETIME <= one_month));
+spot = rates((rates.DATETIME >= trade_date) & (rates.DATETIME <= one_month), :);
+spot = spot.SPOT;
 sum = 0;
 
 for i = 1:(length(spot)-1)
-    ln = log(rates.SPOT(i) / rates.SPOT(i+1))^2;    
+    ln = log(spot(i+1) / spot(i))^2;    
     sum = sum + ln;
 end
 
-sigma_r = sum / height(rates);
+sigma_r =  252*(sum / length(spot));
 end
 
 function [ki] = K_Var(opt, rates)
@@ -103,7 +128,8 @@ function K_var =  swap_calc_onetenor(options, rates)
 
     %sample(end,:) = []; %delete last row since it seems to be a troublemaker
 
-    sample = sortrows(sample, 2); %sort data by strike column, ascending
+    sample = sortrows(sample, 3); %sort data by strike column, ascending
+    sample(diff(sample.STRIKE,2) > 0,:) = []; % after sorting, use this to eliminate repetition
 
     strike = sample.STRIKE;
     call = sample.CALL;
@@ -113,8 +139,8 @@ function K_var =  swap_calc_onetenor(options, rates)
     put_inv_weighted = put./(strike.^2);
 
 
-    diff = abs(call - put);
-    index_of_smallest_diff = find(diff == min(diff));
+    dif = abs(call - put);
+    index_of_smallest_diff = find(dif == min(dif));
     S_star = strike(index_of_smallest_diff);
 
     spline_of_call = spline(strike, call_inv_weighted);
